@@ -1,0 +1,4 @@
+# Brand Mood Studio on Netlify
+[build]
+  publish = "public"            # the page
+  functions = "netlify/functions" # the Unsplash proxy (served at /api/unsplash)
