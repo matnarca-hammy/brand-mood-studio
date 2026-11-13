@@ -108,6 +108,12 @@
   .board-bar { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 4px 32px 10px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
   .board-bar h3 { font-family: var(--serif); font-weight: 600; color: var(--ink); font-size: 20px; margin: 0; letter-spacing: -.01em; }
   .board-bar strong { color: var(--ink); font-weight: 600; }
+  .pinrow { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 0 32px 14px; }
+  .pinrow[hidden] { display: none; }
+  .pinrow input[type=text] { flex: 1 1 260px; min-width: 0; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 99px; padding: 9px 15px; font-size: 13px; }
+  .pinrow input[type=text]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .pinrow .blend { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .filters { display: flex; justify-content: space-between; align-items: center; gap: 10px 16px; flex-wrap: wrap; padding: 0 32px 14px; }
   .filter-group { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
@@ -141,7 +147,7 @@
     .app.collapsed .side { transform: translateX(-102%); }
     .toggle { position: fixed; top: 14px; left: min(88vw, 340px); }
     .app.collapsed .toggle { left: 0; }
-    .head, .kit, .board-bar, .filters, .grid { padding-left: 16px; padding-right: 16px; }
+    .head, .kit, .board-bar, .filters, .pinrow, .grid { padding-left: 16px; padding-right: 16px; }
     .head { padding-left: 40px; }
     .grid { columns: 2 140px; }
     .swatch span:first-child { height: 54px; }
@@ -200,6 +206,12 @@
       <div class="filter-group" role="group" aria-label="Project focus" id="focus"></div>
       <div class="seg" role="group" aria-label="Image source" id="sources" hidden></div>
     </div>
+    <form class="pinrow" id="pinRow" novalidate hidden>
+      <label for="pinInput" class="sr-only">Pinterest board link</label>
+      <input id="pinInput" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste a public Pinterest board link, e.g. pinterest.com/name/board-name">
+      <button class="btn" type="submit">Load board</button>
+      <label class="blend"><input type="checkbox" id="pinBlend"> Blend with Unsplash photos</label>
+    </form>
     <div class="grid" id="grid" aria-live="polite"><div class="empty"><div class="spinner"></div>Finding a starting point…</div></div>
   </main>
 </div>
@@ -241,11 +253,13 @@ const APP_NAME = "brand_mood_studio";   // used in Unsplash's required attributi
 // Museum archives were tried and dropped: their catalogue titles don't match mood keywords.
 const LIBS = {
   unsplash: { label: "Unsplash" },
+  pinterest: { label: "Pinterest board" },   // pins from a public board, read by netlify/functions/pinterest.mjs
   photo: { label: "Free library", sources: "wordpress,stocksnap,rawpixel,nappy" },
 };
-const HAS_UNSPLASH = location.protocol.startsWith("http");
-if (!HAS_UNSPLASH) delete LIBS.unsplash;
+const HAS_UNSPLASH = location.protocol.startsWith("http");   // Unsplash and Pinterest both need the site's server
+if (!HAS_UNSPLASH) { delete LIBS.unsplash; delete LIBS.pinterest; }
 let focus = "all", lib = HAS_UNSPLASH ? "unsplash" : "photo";
+let pinBoard = "", pinBlend = false;
 // value: -3 (fully left) .. +3 (fully right)
 const PRESETS = {
   "Luxury":    [-1, 0, 2, -2, -1, 2, 3, 2, 1, 0, 3],
@@ -264,12 +278,16 @@ function readUrl() {
   if (p && /^[0-6]+$/.test(p) && p.length === TRAITS.length) values = [...p].map(c => +c - 3);
   if (FOCUS[sp.get("f")]) focus = sp.get("f");
   if (LIBS[sp.get("lib")]) lib = sp.get("lib");
+  pinBoard = (sp.get("pin") || "").slice(0, 300);
+  pinBlend = sp.get("blend") === "1";
 }
 function writeUrl() {
   const url = new URL(location.href);
   url.searchParams.set("m", values.map(v => v + 3).join(""));
   url.searchParams.set("f", focus);
   if (HAS_UNSPLASH) url.searchParams.set("lib", lib);
+  url.searchParams.delete("pin"); url.searchParams.delete("blend");
+  if (lib === "pinterest" && pinBoard) { url.searchParams.set("pin", pinBoard); if (pinBlend) url.searchParams.set("blend", "1"); }
   try { history.replaceState(null, "", url); } catch {}
 }
 
@@ -493,7 +511,7 @@ function mix(buckets, weights) {
     buckets.forEach((b, i) => {
       while (idx[i] < b.length && taken[i] < quota[i]) {
         const it = b[idx[i]++], tk = `${it.source}|${cleanTitle(it.title).toLowerCase()}`;
-        if (!fits(it) || seen.has(it.id) || seen.has(it.img) || (titles.get(tk) || 0) >= 2) continue;
+        if (!fits(it) || seen.has(it.id) || seen.has(it.img) || (it.source !== "pinterest" && (titles.get(tk) || 0) >= 2)) continue;
         seen.add(it.id); seen.add(it.img); titles.set(tk, (titles.get(tk) || 0) + 1);
         out.push(it); taken[i]++; progress = true; break;
       }
@@ -510,18 +528,49 @@ function link(url, text) {
   if (!url || !/^https?:\/\//i.test(url)) return document.createTextNode(text);
   const a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = text; return a;
 }
+// Pinterest: the site's function reads the board's public feed (its 25 most recent pins).
+function pinErr(msg) { const e = new Error(msg); e.pinterest = true; return e; }
+function shuffle(a) { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+async function pinterestBucket() {
+  const key = `pinterest|${pinBoard}|${Math.floor(Date.now() / 36e5)}`;   // re-check the board every hour
+  let data = memCache.get(key)?.r;
+  if (!data) {
+    let r;
+    try { r = await fetch(`/api/pinterest?board=${encodeURIComponent(pinBoard)}`, { headers: { Accept: "application/json" } }); }
+    catch { throw pinErr("Couldn't reach the server. Check your connection and try again."); }
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw pinErr(
+      r.status === 429 ? "Too many board loads in a minute. Wait a moment and try again." :
+      body.error || "Pinterest boards need the site's server. Open the Netlify site, or run netlify dev.");
+    data = body; memCache.set(key, { t: Date.now(), r: data }); saveCache();
+  }
+  const pins = data.pins.map(p => ({ ...p, source: "pinterest" }));
+  return { board: data.board, pins: page > 1 ? shuffle(pins) : pins };
+}
+function showBoardLine(board, words) {
+  const q = $("#queryline"); q.textContent = "Pins from ";
+  q.append(link(board.url, board.title));
+  if (pinBlend && words.length) { q.append(document.createTextNode(", blended with Unsplash: ")); const s = document.createElement("strong"); s.textContent = words.join(" · "); q.append(s); }
+}
 async function search() {
   const id = ++reqId;
   let ts = terms();
-  const useUnsplash = lib === "unsplash";
+  const usePins = lib === "pinterest";
+  const useUnsplash = lib === "unsplash" || (usePins && pinBlend);
   const words = ts.map(t => t.w).filter(Boolean).slice(0, useUnsplash ? 2 : MAX_TERMS);
   const where = FOCUS[focus].word ? ` in ${FOCUS[focus].label.toLowerCase()}` : "";
-  $("#queryline").innerHTML = "Mixing <strong></strong>";
-  $("#queryline strong").textContent = (words.length ? words.join(" · ") : FOCUS[focus].label.toLowerCase()) + where;
-  empty("Gathering images", `Searching ${LIBS[lib].label.toLowerCase()}…`, true);
-  // Render progressively: each keyword's images join the board as soon as its search returns.
-  const jobs = useUnsplash ? [() => unsplashBucket(ts)] : ts.map(t => () => fetchBucket(t));
-  const weights = useUnsplash ? [1] : ts.map(t => t.n);
+  if (usePins && !pinBoard) {
+    $("#queryline").textContent = "Waiting for a board link";
+    return empty("Bring in a Pinterest board", "Paste a link to any public board above. Its 25 most recent pins show up here.");
+  }
+  $("#queryline").innerHTML = usePins ? "Loading the board…" : "Mixing <strong></strong>";
+  if (!usePins) $("#queryline strong").textContent = (words.length ? words.join(" · ") : FOCUS[focus].label.toLowerCase()) + where;
+  empty("Gathering images", usePins ? "Reading the Pinterest board…" : `Searching ${LIBS[lib].label.toLowerCase()}…`, true);
+  // Render progressively: each source's images join the board as soon as its search returns.
+  const pinJob = () => pinterestBucket().then(({ board, pins }) => { if (id === reqId) showBoardLine(board, words); return pins; });
+  const jobs = usePins ? [pinJob, ...(pinBlend ? [() => unsplashBucket(ts)] : [])]
+             : useUnsplash ? [() => unsplashBucket(ts)] : ts.map(t => () => fetchBucket(t));
+  const weights = usePins ? (pinBlend ? [2, 1] : [1]) : useUnsplash ? [1] : ts.map(t => t.n);
   const buckets = jobs.map(() => []), errors = [], shown = new Set();
   let pending = jobs.length;
   const draw = () => {
@@ -539,7 +588,8 @@ async function search() {
       img.addEventListener("error", () => fig.remove(), { once: true });
       a.append(img);
       const cap = document.createElement("figcaption");
-      if (it.source === "unsplash") cap.append(document.createTextNode("Photo by "), link(it.creator_url, it.creator || "Unknown"), document.createTextNode(" on "), link(`https://unsplash.com/?utm_source=${APP_NAME}&utm_medium=referral`, "Unsplash"));
+      if (it.source === "pinterest") cap.append(document.createTextNode(it.title ? `${it.title} — ` : ""), link(it.href, "View on Pinterest"));
+      else if (it.source === "unsplash") cap.append(document.createTextNode("Photo by "), link(it.creator_url, it.creator || "Unknown"), document.createTextNode(" on "), link(`https://unsplash.com/?utm_source=${APP_NAME}&utm_medium=referral`, "Unsplash"));
       else cap.append(document.createTextNode(cleanTitle(it.title) + " — "), link(it.creator_url, it.creator || "Unknown"), document.createTextNode(" · "), link(it.license_url, `CC ${(it.license || "").toUpperCase()} ${it.license_version || ""}`.trim()));
       fig.append(a, cap); grid.append(fig);
     });
@@ -551,9 +601,10 @@ async function search() {
     pending--; draw();
   })));
   if (id !== reqId || draw()) return;
-  const fail = errors[0];
+  const fail = errors.find(e => e.pinterest) || errors[0];
+  if (fail?.pinterest) return empty("Couldn’t load that board", fail.message);
   // If Unsplash is unavailable (bad key, hourly limit, offline), show the free library instead of an empty board.
-  if (fail?.fallback && useUnsplash) { toast(`${fail.message} Showing the free library instead.`); lib = "photo"; renderFilters(); writeUrl(); return search(); }
+  if (fail?.fallback && useUnsplash && !usePins) { toast(`${fail.message} Showing the free library instead.`); lib = "photo"; renderFilters(); writeUrl(); return search(); }
   if (fail?.rate) return empty("Taking a breather", "The free image library allows about 20 searches a minute. Wait a moment, then press Shuffle.");
   if (fail) return empty("Couldn’t load images", fail.name === "TypeError" ? "Check your connection, then press Shuffle to try again." : fail.message);
   if (page > 1) { page = 1; return search(); }
@@ -573,6 +624,9 @@ function renderFilters() {
   mk($("#focus"), FOCUS, () => focus, k => focus = k);
   const src = $("#sources"); src.hidden = !HAS_UNSPLASH;
   if (HAS_UNSPLASH) mk(src, LIBS, () => lib, k => lib = k);
+  $("#pinRow").hidden = lib !== "pinterest";
+  $("#pinInput").value = pinBoard;
+  $("#pinBlend").checked = pinBlend;
 }
 
 /* ---------- Wiring ---------- */
@@ -584,6 +638,12 @@ function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.ad
 async function copy(text, msg) { try { await navigator.clipboard.writeText(text); toast(msg); } catch { toast("Couldn’t copy — select it manually"); } }
 
 $("#reset").addEventListener("click", () => { values = TRAITS.map(() => 0); renderSliders(); onChange(true); });
+$("#pinRow").addEventListener("submit", e => {
+  e.preventDefault();
+  pinBoard = $("#pinInput").value.trim().slice(0, 300); page = 1; writeUrl(); search();
+});
+$("#pinBlend").addEventListener("change", e => { pinBlend = e.target.checked; writeUrl(); search(); });
+$("#sources").addEventListener("click", () => { if (lib === "pinterest" && !pinBoard) setTimeout(() => $("#pinInput").focus(), 0); });
 $("#refresh").addEventListener("click", () => { page = page % 5 + 1; search(); });
 $("#share").addEventListener("click", () => copy(location.href, "Link copied — it opens with these settings"));
 $("#toggle").addEventListener("click", () => {
